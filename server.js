@@ -60,6 +60,7 @@ app.post('/api/location', async (req, res) => {
         speed      : speed      || 0,
         altitude   : altitude   || 0,
         satellites : satellites || 0
+        source     : 'gps'
       }]);
 
     if (error) {
@@ -182,6 +183,7 @@ app.post('/api/wifi-location', async (req, res) => {
         speed      : 0,
         altitude   : 0,
         satellites : 0
+        source     : 'wifi'
       }]);
 
     if (insertError) return res.status(500).json({ error: insertError.message });
