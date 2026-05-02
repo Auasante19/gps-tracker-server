@@ -201,6 +201,48 @@ app.post('/api/wifi-location', async (req, res) => {
 });
 
 // ============================================================
+//   ROUTE: Setup WiFi anchors
+// ============================================================
+app.post('/api/wifi-anchors/setup', async (req, res) => {
+  try {
+    // Delete existing anchors
+    await supabase.from('wifi_anchors').delete().neq('id', 0);
+
+    // Insert our routers
+    const { data, error } = await supabase
+      .from('wifi_anchors')
+      .insert([
+        {
+          ssid        : 'MTN_4G_E09BD1',
+          latitude    : 5.6893632,
+          longitude   : -0.2097933,
+          tx_power    : -59,
+          description : 'MTN Router',
+          active      : true
+        },
+        {
+          ssid        : 'Tenda_030398',
+          latitude    : 5.6894736,
+          longitude   : -0.2098564,
+          tx_power    : -59,
+          description : 'Tenda Router',
+          active      : true
+        }
+      ]);
+
+    if (error) return res.status(500).json({ error: error.message });
+
+    return res.status(201).json({ 
+      success : true, 
+      message : '2 WiFi anchors configured successfully' 
+    });
+
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
 //   ROUTE: Get WiFi anchors
 // ============================================================
 app.get('/api/wifi-anchors', async (req, res) => {
