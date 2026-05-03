@@ -59,7 +59,7 @@ app.post('/api/location', async (req, res) => {
         longitude,
         speed      : speed      || 0,
         altitude   : altitude   || 0,
-        satellites : satellites || 0
+        satellites : satellites || 0,
         source     : 'gps'
       }]);
 
@@ -182,7 +182,7 @@ app.post('/api/wifi-location', async (req, res) => {
         longitude  : estimatedLng,
         speed      : 0,
         altitude   : 0,
-        satellites : 0
+        satellites : 0,
         source     : 'wifi'
       }]);
 
