@@ -1,16 +1,12 @@
 const express = require('express');
 const cors    = require('cors');
 require('dotenv').config();
-console.log('SUPABASE_URL:', process.env.SUPABASE_URL); // temporary debug
 const { createClient } = require('@supabase/supabase-js');
 
-// ============================================================
-//   SUPABASE CLIENT
-// ============================================================
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_KEY
-);
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://madljamorbxguypbvcpc.supabase.co';
+const SUPABASE_KEY = process.env.SUPABASE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1hZGxqYW1vcmJ4Z3V5cGJ2Y3BjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU5OTYxNzAsImV4cCI6MjA5MTU3MjE3MH0.BkpUdJN7pGlL8RyXMeSk7phmQJIZFULiahURUzTqPBI';
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // ============================================================
 //   EXPRESS APP
