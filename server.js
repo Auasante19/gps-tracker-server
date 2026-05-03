@@ -1,6 +1,7 @@
 const express = require('express');
 const cors    = require('cors');
 require('dotenv').config();
+console.log('SUPABASE_URL:', process.env.SUPABASE_URL); // temporary debug
 const { createClient } = require('@supabase/supabase-js');
 
 // ============================================================
