@@ -1,539 +1,271 @@
-// IMPORTANT: Define modem model BEFORE including TinyGSM
-#define TINY_GSM_MODEM_SIM7600
-#define TINY_GSM_USE_SSL
+const express = require('express');
+const cors    = require('cors');
+require('dotenv').config();
+const { createClient } = require('@supabase/supabase-js');
 
-#include <Arduino.h>
-#include <TinyGsmClient.h>
-#include <ArduinoHttpClient.h>
-#include <ArduinoJson.h>
-#include <TinyGPSPlus.h>
-#include <WiFi.h>
-#include <WiFiClientSecure.h>
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://madljamorbxguypbvcpc.supabase.co';
+const SUPABASE_KEY = process.env.SUPABASE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1hZGxqYW1vcmJ4Z3V5cGJ2Y3BjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU5OTYxNzAsImV4cCI6MjA5MTU3MjE3MH0.BkpUdJN7pGlL8RyXMeSk7phmQJIZFULiahURUzTqPBI';
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // ============================================================
-//   CONFIGURATION — fill in your details here
+//   EXPRESS APP
 // ============================================================
+const app  = express();
+const PORT = process.env.PORT || 3000;
 
-// WiFi credentials (fallback)
-#define WIFI_SSID        "Acity-Guest"
-#define WIFI_PASSWORD    "password@acity"
-
-// APN for MTN Ghana
-#define APN              "internet"
-#define APN_USER         ""
-#define APN_PASS         ""
-
-// Supabase credentials
-#define SERVER_HOST   "diplomatic-alignment-production-ebb5.up.railway.app"
-#define SERVER_URL    "https://diplomatic-alignment-production-ebb5.up.railway.app/api/location"
-// Device ID
-#define DEVICE_ID        "tracker_01"
-
-// How often to send GPS data (milliseconds)
-#define UPDATE_INTERVAL  300000  // 5 minutes
+app.use(cors());
+app.use(express.json());
 
 // ============================================================
-//   PIN DEFINITIONS for LilyGO SIM7600E
+//   ROUTE: Health check
 // ============================================================
-#define MODEM_TX         27
-#define MODEM_RX         26
-#define MODEM_PWRKEY     4
-#define MODEM_POWER_ON   25
-#define MODEM_RST        5
-#define GPS_RX           23
-#define GPS_TX           22
-
-// ============================================================
-//   GLOBALS
-// ============================================================
-HardwareSerial SerialAT(1);   // UART1 for SIM7600
-HardwareSerial SerialGPS(2);  // UART2 for GPS
-
-TinyGsm        modem(SerialAT);
-TinyGsmClient  gsmClient(modem);
-TinyGPSPlus    gps;
-
-bool useLTE  = false;
-bool useWiFi = false;
-
-unsigned long lastUpdate = 0;
+app.get('/', (req, res) => {
+  res.json({ 
+    status  : 'GPS Tracker Server is running',
+    version : '1.0.0'
+  });
+});
 
 // ============================================================
-//   FUNCTION: Power on the SIM7600 modem
+//   ROUTE: Receive GPS location from LilyGO
 // ============================================================
-void modemPowerOn() {
-  Serial.println("[LTE] Powering on modem...");
-  pinMode(MODEM_POWER_ON, OUTPUT);
-  digitalWrite(MODEM_POWER_ON, HIGH);
+app.post('/api/location', async (req, res) => {
+  try {
+    const { device_id, latitude, longitude, speed, altitude, satellites } = req.body;
 
-  pinMode(MODEM_PWRKEY, OUTPUT);
-  digitalWrite(MODEM_PWRKEY, LOW);
-  delay(100);
-  digitalWrite(MODEM_PWRKEY, HIGH);
-  delay(1000);
-  digitalWrite(MODEM_PWRKEY, LOW);
-  delay(5000);
-}
-
-// ============================================================
-//   FUNCTION: Try connecting via LTE
-// ============================================================
-bool connectLTE() {
-  Serial.println("[LTE] Initialising modem...");
-  SerialAT.begin(115200, SERIAL_8N1, MODEM_RX, MODEM_TX);
-  delay(3000);
-
-  modem.restart();
-  String modemInfo = modem.getModemInfo();
-  Serial.println("[LTE] Modem: " + modemInfo);
-
-  Serial.println("[LTE] Waiting for network...");
-  if (!modem.waitForNetwork(60000L)) {
-    Serial.println("[LTE] Network failed");
-    return false;
-  }
-
-  Serial.println("[LTE] Connecting to APN...");
-  if (!modem.gprsConnect(APN, APN_USER, APN_PASS)) {
-    Serial.println("[LTE] APN failed");
-    return false;
-  }
-
-  Serial.println("[LTE] Connected! IP: " + modem.localIP().toString());
-  return true;
-}
-
-// ============================================================
-//   FUNCTION: Try connecting via WiFi
-// ============================================================
-bool connectWiFi() {
-  Serial.println("[WiFi] Connecting to: " + String(WIFI_SSID));
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-    delay(500);
-    Serial.print(".");
-    attempts++;
-  }
-
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\n[WiFi] Connected! IP: " + WiFi.localIP().toString());
-    return true;
-  }
-
-  Serial.println("\n[WiFi] Failed to connect");
-  return false;
-}
-
-// ============================================================
-//   FUNCTION: Enable GPS on SIM7600E via AT commands
-// ============================================================
-void enableGPS() {
-  Serial.println("[GPS] Powering on GNSS via AT command...");
-  
-  // Turn off first in case it was already on
-  SerialAT.println("AT+CGPS=0");
-  delay(2000);
-  while (SerialAT.available()) Serial.write(SerialAT.read());
-
-  // Turn on GPS
-  SerialAT.println("AT+CGPS=1,1");
-  delay(2000);
-  while (SerialAT.available()) Serial.write(SerialAT.read());
-
-  // Check GPS status
-  SerialAT.println("AT+CGPS?");
-  delay(1000);
-  while (SerialAT.available()) Serial.write(SerialAT.read());
-
-  // Get GPS info
-  SerialAT.println("AT+CGPSINFO");
-  delay(1000);
-  while (SerialAT.available()) Serial.write(SerialAT.read());
-
-  Serial.println("[GPS] GNSS init complete");
-}
-
-// ============================================================
-//   FUNCTION: Test GPS via AT command directly
-// ============================================================
-void testGPS() {
-  Serial.println("[GPS] Testing GNSS module...");
-  
-  SerialAT.println("AT+CGPS?");
-  delay(1000);
-  while (SerialAT.available()) Serial.write(SerialAT.read());
-
-  SerialAT.println("AT+CGPSINFO");
-  delay(1000);
-  while (SerialAT.available()) Serial.write(SerialAT.read());
-
-
-  // Check signal strength
-  SerialAT.println("AT+CSQ");
-  delay(1000);
-  while (SerialAT.available()) {
-    Serial.write(SerialAT.read());
-  }
-}
-// ============================================================
-//   FUNCTION: Send GPS data to Supabase via LTE
-// ============================================================
-void sendViaLTE(float lat, float lng, float spd, float altitude, int satellites) {
-  JsonDocument doc;
-  doc["device_id"]  = DEVICE_ID;
-  doc["latitude"]   = lat;
-  doc["longitude"]  = lng;
-  doc["speed"]      = spd;
-  doc["altitude"]   = altitude;
-  doc["satellites"] = satellites;
-
-  String body;
-  serializeJson(doc, body);
-
-  Serial.println("[LTE] Sending via AT HTTPS: " + body);
-
-  // Close any previous HTTP session
-  SerialAT.println("AT+HTTPTERM");
-  delay(1000);
-  while (SerialAT.available()) SerialAT.read();
-
-  // Initialize HTTP
-  SerialAT.println("AT+HTTPINIT");
-  delay(1000);
-  while (SerialAT.available()) SerialAT.read();
-
-  // Set SSL
-  SerialAT.println("AT+HTTPSSL=1");
-  delay(500);
-  while (SerialAT.available()) SerialAT.read();
-
-  // Set URL
-  SerialAT.println("AT+HTTPPARA=\"URL\",\"https://diplomatic-alignment-production-ebb5.up.railway.app/api/location\"");
-  delay(500);
-  while (SerialAT.available()) SerialAT.read();
-
-  // Set content type
-  SerialAT.println("AT+HTTPPARA=\"CONTENT\",\"application/json\"");
-  delay(500);
-  while (SerialAT.available()) SerialAT.read();
-
-  // Set data length and timeout
-  SerialAT.println("AT+HTTPDATA=" + String(body.length()) + ",10000");
-  delay(500);
-
-  // Wait for DOWNLOAD prompt
-  String prompt = "";
-  long timeout = millis() + 5000;
-  while (millis() < timeout) {
-    if (SerialAT.available()) {
-      prompt += (char)SerialAT.read();
-      if (prompt.indexOf("DOWNLOAD") >= 0) break;
+    // Validate required fields
+    if (!latitude || !longitude) {
+      return res.status(400).json({ error: 'latitude and longitude are required' });
     }
-  }
-  Serial.println("[LTE] Prompt: " + prompt);
 
-  // Send JSON body
-  SerialAT.print(body);
-  delay(2000);
-
-  // Execute POST
-  SerialAT.println("AT+HTTPACTION=1");
-  delay(500);
-
-  // Wait for response
-  String response = "";
-  timeout = millis() + 10000;
-  while (millis() < timeout) {
-    if (SerialAT.available()) {
-      response += (char)SerialAT.read();
-      if (response.indexOf("+HTTPACTION") >= 0) break;
+    if (latitude < -90 || latitude > 90) {
+      return res.status(400).json({ error: 'Invalid latitude value' });
     }
-  }
-  Serial.println("[LTE] Response: " + response);
 
-  // Read response body
-  SerialAT.println("AT+HTTPREAD");
-  delay(1000);
-  String responseBody = "";
-  timeout = millis() + 3000;
-  while (millis() < timeout) {
-    if (SerialAT.available()) {
-      responseBody += (char)SerialAT.read();
+    if (longitude < -180 || longitude > 180) {
+      return res.status(400).json({ error: 'Invalid longitude value' });
     }
-  }
-  Serial.println("[LTE] Body: " + responseBody);
 
-  // Terminate HTTP
-  SerialAT.println("AT+HTTPTERM");
-  delay(500);
-  while (SerialAT.available()) SerialAT.read();
-}
-// ============================================================
-//   FUNCTION: Send GPS data to Supabase via WiFi
-// ============================================================
-void sendViaWiFi(float lat, float lng, float spd, float altitude, int satellites) {
-  WiFiClientSecure client;
-  client.setInsecure();
+    // Save to Supabase
+    const { data, error } = await supabase
+      .from('locations')
+      .insert([{
+        device_id  : device_id  || 'tracker_01',
+        latitude,
+        longitude,
+        speed      : speed      || 0,
+        altitude   : altitude   || 0,
+        satellites : satellites || 0,
+        source     : 'gps'
+      }]);
 
-  HttpClient http(client, "diplomatic-alignment-production-ebb5.up.railway.app", 443);
-
-  JsonDocument doc;
-  doc["device_id"]  = DEVICE_ID;
-  doc["latitude"]   = lat;
-  doc["longitude"]  = lng;
-  doc["speed"]      = spd;
-  doc["altitude"]   = altitude;
-  doc["satellites"] = satellites;
-
-  String body;
-  serializeJson(doc, body);
-
-  Serial.println("[WiFi] Sending: " + body);
-
-  http.beginRequest();
-  http.post("/api/location");
-  http.sendHeader("Host",           "diplomatic-alignment-production-ebb5.up.railway.app");
-  http.sendHeader("Content-Type",   "application/json");
-  http.sendHeader("Content-Length", String(body.length()));
-  http.beginBody();
-  http.print(body);
-  http.endRequest();
-
-  int statusCode = http.responseStatusCode();
-  String responseBody = http.responseBody();
-  Serial.println("[WiFi] Status: " + String(statusCode));
-  Serial.println("[WiFi] Response: " + responseBody);
-}
-// ============================================================
-//   SETUP
-// ============================================================
-void setup() {
-  Serial.begin(115200);
-  delay(1000);
-  Serial.println("=== GPS Tracker Starting ===");
-
-  // Start GPS
-  SerialGPS.begin(9600, SERIAL_8N1, GPS_RX, GPS_TX);
-  Serial.println("[GPS] Serial started");
-
-  // Try LTE first
-  modemPowerOn();
-  if (connectLTE()) {
-    useLTE = true;
-    Serial.println("[NET] Using LTE");
-  } else {
-    // Fall back to WiFi
-    Serial.println("[NET] Falling back to WiFi...");
-    if (connectWiFi()) {
-      useWiFi = true;
-      Serial.println("[NET] Using WiFi");
-    } else {
-      Serial.println("[NET] No connection available!");
+    if (error) {
+      console.error('[DB] Supabase error:', error.message);
+      return res.status(500).json({ error: 'Database error', details: error.message });
     }
+
+    console.log(`[GPS] Saved: Lat ${latitude}, Lng ${longitude}`);
+    return res.status(201).json({ success: true, message: 'Location saved' });
+
+  } catch (err) {
+    console.error('[SERVER] Error:', err.message);
+    return res.status(500).json({ error: 'Server error', details: err.message });
   }
-enableGPS();
-testGPS();
-}
-// ============================================================
-//   FUNCTION: Scan WiFi and send for trilateration
-// ============================================================
-void sendWiFiTrilateration() {
-  Serial.println("[WiFi] Starting WiFi scan for trilateration...");
-  
-  // Turn on WiFi just for scanning (even if we're using LTE for data)
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect();
-  delay(1000);
+});
 
-  Serial.println("[WiFi] Scanning for anchor networks...");
-  int networksFound = WiFi.scanNetworks();
-  
-  if (networksFound == 0) {
-    Serial.println("[WiFi] No networks found");
-    return;
+// ============================================================
+//   ROUTE: Get latest location
+// ============================================================
+app.get('/api/location/latest', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('locations')
+      .select('*')
+      .order('timestamp', { ascending: false })
+      .limit(1);
+
+    if (error) return res.status(500).json({ error: error.message });
+    if (data.length === 0) return res.status(404).json({ error: 'No locations found' });
+
+    return res.status(200).json(data[0]);
+
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
   }
+});
 
-  Serial.println("[WiFi] Found " + String(networksFound) + " networks");
+// ============================================================
+//   ROUTE: Get location history
+// ============================================================
+app.get('/api/location/history', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 50;
 
-  // Build JSON with all found networks
-  JsonDocument doc;
-  doc["device_id"] = DEVICE_ID;
-  JsonArray networks = doc["networks"].to<JsonArray>();
+    const { data, error } = await supabase
+      .from('locations')
+      .select('*')
+      .order('timestamp', { ascending: false })
+      .limit(limit);
 
-  int matchCount = 0;
-  for (int i = 0; i < networksFound; i++) {
-    String ssid = WiFi.SSID(i);
-    int rssi    = WiFi.RSSI(i);
+    if (error) return res.status(500).json({ error: error.message });
 
-    // Only include our known anchor networks
-    if (ssid == "MTN_4G_E09BD1" || ssid == "Tenda_030398") {
-      JsonObject network = networks.add<JsonObject>();
-      network["ssid"] = ssid;
-      network["rssi"] = rssi;
-      matchCount++;
-      Serial.println("[WiFi] Found anchor: " + ssid + " RSSI: " + String(rssi));
+    return res.status(200).json(data);
+
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
+//   ROUTE: Receive WiFi trilateration data
+// ============================================================
+app.post('/api/wifi-location', async (req, res) => {
+  try {
+    const { device_id, networks } = req.body;
+
+    if (!networks || networks.length === 0) {
+      return res.status(400).json({ error: 'No WiFi networks provided' });
     }
-  }
 
-  WiFi.scanDelete();
+    // Fetch known anchor points from Supabase
+    const { data: anchors, error: anchorError } = await supabase
+      .from('wifi_anchors')
+      .select('*')
+      .eq('active', true);
 
-  if (matchCount == 0) {
-    Serial.println("[WiFi] No anchor networks found in scan");
-    return;
-  }
+    if (anchorError) return res.status(500).json({ error: anchorError.message });
 
-  String body;
-  serializeJson(doc, body);
-  Serial.println("[WiFi] Sending trilateration data: " + body);
-
-  // Send via LTE if available otherwise WiFi
-  if (useLTE) {
-    // Use AT command HTTP to send trilateration data via LTE
-    SerialAT.println("AT+HTTPTERM");
-    delay(500);
-    while (SerialAT.available()) SerialAT.read();
-
-    SerialAT.println("AT+HTTPINIT");
-    delay(1000);
-    while (SerialAT.available()) SerialAT.read();
-
-    SerialAT.println("AT+HTTPSSL=1");
-    delay(500);
-    while (SerialAT.available()) SerialAT.read();
-
-    SerialAT.println("AT+HTTPPARA=\"URL\",\"https://diplomatic-alignment-production-ebb5.up.railway.app/api/wifi-location\"");
-    delay(500);
-    while (SerialAT.available()) SerialAT.read();
-
-    SerialAT.println("AT+HTTPPARA=\"CONTENT\",\"application/json\"");
-    delay(500);
-    while (SerialAT.available()) SerialAT.read();
-
-    SerialAT.println("AT+HTTPDATA=" + String(body.length()) + ",10000");
-    delay(500);
-
-    String prompt = "";
-    long timeout = millis() + 5000;
-    while (millis() < timeout) {
-      if (SerialAT.available()) {
-        prompt += (char)SerialAT.read();
-        if (prompt.indexOf("DOWNLOAD") >= 0) break;
+    // Match scanned networks with known anchors
+    const matched = [];
+    for (const network of networks) {
+      const anchor = anchors.find(a => a.ssid === network.ssid);
+      if (anchor) {
+        // Convert RSSI to distance using path loss model
+        const distance = Math.pow(10, (anchor.tx_power - network.rssi) / (10 * 2.0));
+        matched.push({
+          latitude  : anchor.latitude,
+          longitude : anchor.longitude,
+          distance
+        });
       }
     }
 
-    SerialAT.print(body);
-    delay(2000);
-
-    SerialAT.println("AT+HTTPACTION=1");
-    delay(500);
-
-    String httpResponse = "";
-    timeout = millis() + 10000;
-    while (millis() < timeout) {
-      if (SerialAT.available()) {
-        httpResponse += (char)SerialAT.read();
-        if (httpResponse.indexOf("+HTTPACTION") >= 0) break;
-      }
-    }
-    Serial.println("[WiFi-Tri] LTE Response: " + httpResponse);
-
-    SerialAT.println("AT+HTTPTERM");
-    delay(500);
-    while (SerialAT.available()) SerialAT.read();
-
-  } else if (useWiFi) {
-    // Reconnect to WiFi for sending
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-      delay(500);
-      attempts++;
+    if (matched.length === 0) {
+      return res.status(404).json({ error: 'No known anchors found' });
     }
 
-    WiFiClientSecure client;
-    client.setInsecure();
-    HttpClient http(client, "diplomatic-alignment-production-ebb5.up.railway.app", 443);
+    // Calculate weighted centroid position
+    let totalWeight = 0;
+    let weightedLat = 0;
+    let weightedLng = 0;
 
-    http.beginRequest();
-    http.post("/api/wifi-location");
-    http.sendHeader("Host",           "diplomatic-alignment-production-ebb5.up.railway.app");
-    http.sendHeader("Content-Type",   "application/json");
-    http.sendHeader("Content-Length", String(body.length()));
-    http.beginBody();
-    http.print(body);
-    http.endRequest();
+    for (const point of matched) {
+      const weight = 1 / (point.distance * point.distance);
+      weightedLat += point.latitude  * weight;
+      weightedLng += point.longitude * weight;
+      totalWeight += weight;
+    }
 
-    int statusCode = http.responseStatusCode();
-    Serial.println("[WiFi-Tri] Status: " + String(statusCode));
-    Serial.println("[WiFi-Tri] Response: " + http.responseBody());
+    const estimatedLat = weightedLat / totalWeight;
+    const estimatedLng = weightedLng / totalWeight;
+
+    // Save estimated location to Supabase
+    const { error: insertError } = await supabase
+      .from('locations')
+      .insert([{
+        device_id  : device_id || 'tracker_01',
+        latitude   : estimatedLat,
+        longitude  : estimatedLng,
+        speed      : 0,
+        altitude   : 0,
+        satellites : 0,
+        source     : 'wifi'
+      }]);
+
+    if (insertError) return res.status(500).json({ error: insertError.message });
+
+    console.log(`[WiFi] Estimated position: ${estimatedLat}, ${estimatedLng} from ${matched.length} anchors`);
+
+    return res.status(201).json({
+      success    : true,
+      latitude   : estimatedLat,
+      longitude  : estimatedLng,
+      anchors_used: matched.length
+    });
+
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
   }
-}
+});
+
 // ============================================================
-//   LOOP
+//   ROUTE: Setup WiFi anchors
 // ============================================================
-void loop() {
-  // Request GPS info from modem via AT command
-  SerialAT.println("AT+CGPSINFO");
-  delay(1000);
+app.post('/api/wifi-anchors/setup', async (req, res) => {
+  try {
+    // Delete existing anchors
+    await supabase.from('wifi_anchors').delete().neq('id', 0);
 
-  String response = "";
-  while (SerialAT.available()) {
-    response += (char)SerialAT.read();
+    // Insert our routers
+    const { data, error } = await supabase
+      .from('wifi_anchors')
+      .insert([
+        {
+          ssid        : 'MTN_4G_E09BD1',
+          latitude    : 5.6893632,
+          longitude   : -0.2097933,
+          tx_power    : -59,
+          description : 'MTN Router',
+          active      : true
+        },
+        {
+          ssid        : 'Tenda_030398',
+          latitude    : 5.6894736,
+          longitude   : -0.2098564,
+          tx_power    : -59,
+          description : 'Tenda Router',
+          active      : true
+        }
+      ]);
+
+    if (error) return res.status(500).json({ error: error.message });
+
+    return res.status(201).json({ 
+      success : true, 
+      message : '2 WiFi anchors configured successfully' 
+    });
+
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
   }
+});
 
-  Serial.println("[MODEM] " + response);
+// ============================================================
+//   ROUTE: Get WiFi anchors
+// ============================================================
+app.get('/api/wifi-anchors', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('wifi_anchors')
+      .select('*')
+      .eq('active', true);
 
-  if (response.indexOf("+CGPSINFO:") >= 0 && response.indexOf(",,,,") == -1) {
-    
-    int start = response.indexOf("+CGPSINFO:") + 10;
-    String data = response.substring(start);
-    data.trim();
+    if (error) return res.status(500).json({ error: error.message });
+    return res.status(200).json(data);
 
-    int idx = 0;
-    String parts[10];
-    for (int i = 0; i < 10; i++) {
-      int comma = data.indexOf(',', idx);
-      if (comma == -1) {
-        parts[i] = data.substring(idx);
-        break;
-      }
-      parts[i] = data.substring(idx, comma);
-      idx = comma + 1;
-    }
-
-    // Convert NMEA to decimal degrees
-    float rawLat = parts[0].toFloat();
-    int latDeg   = (int)(rawLat / 100);
-    float latMin = rawLat - (latDeg * 100);
-    float lat    = latDeg + (latMin / 60.0);
-    if (parts[1] == "S") lat = -lat;
-
-    float rawLng = parts[2].toFloat();
-    int lngDeg   = (int)(rawLng / 100);
-    float lngMin = rawLng - (lngDeg * 100);
-    float lng    = lngDeg + (lngMin / 60.0);
-    if (parts[3] == "W") lng = -lng;
-
-    float speed    = parts[7].toFloat();
-    float altitude = parts[6].toFloat();
-
-    Serial.printf("[GPS] Lat: %.6f, Lng: %.6f, Speed: %.1f km/h, Alt: %.1f m\n",
-                  lat, lng, speed, altitude);
-
-    // GPS fix available — send via LTE or WiFi
-    if (useLTE) {
-      sendViaLTE(lat, lng, speed, altitude, 0);
-    } else if (useWiFi) {
-      sendViaWiFi(lat, lng, speed, altitude, 0);
-    }
-
-  } else {
-    // No GPS fix — fall back to WiFi trilateration
-    Serial.println("[GPS] No fix — trying WiFi trilateration...");
-    sendWiFiTrilateration();
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
   }
+});
 
-  delay(UPDATE_INTERVAL);
-}
+// ============================================================
+//   START SERVER
+// ============================================================
+app.listen(PORT, () => {
+  console.log(`[SERVER] GPS Tracker Server running on port ${PORT}`);
+  console.log(`[SERVER] Health check: http://localhost:${PORT}`);
+  console.log(`[SERVER] POST location: http://localhost:${PORT}/api/location`);
+  console.log(`[SERVER] GET latest:    http://localhost:${PORT}/api/location/latest`);
+  console.log(`[SERVER] GET history:   http://localhost:${PORT}/api/location/history`);
+});
