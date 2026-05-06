@@ -258,7 +258,36 @@ app.get('/api/wifi-anchors', async (req, res) => {
     return res.status(500).json({ error: err.message });
   }
 });
+// Handle HTTP requests (for LTE devices that can't do HTTPS)
+app.post('/api/location/http', async (req, res) => {
+  try {
+    const { device_id, latitude, longitude, speed, altitude, satellites } = req.body;
 
+    if (!latitude || !longitude) {
+      return res.status(400).json({ error: 'latitude and longitude are required' });
+    }
+
+    const { data, error } = await supabase
+      .from('locations')
+      .insert([{
+        device_id  : device_id  || 'tracker_01',
+        latitude,
+        longitude,
+        speed      : speed      || 0,
+        altitude   : altitude   || 0,
+        satellites : satellites || 0,
+        source     : 'gps'
+      }]);
+
+    if (error) return res.status(500).json({ error: error.message });
+
+    console.log(`[GPS-HTTP] Saved: Lat ${latitude}, Lng ${longitude}`);
+    return res.status(201).json({ success: true, message: 'Location saved' });
+
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
 // ============================================================
 //   START SERVER
 // ============================================================
